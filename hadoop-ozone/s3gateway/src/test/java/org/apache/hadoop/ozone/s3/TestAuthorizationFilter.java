@@ -20,6 +20,8 @@ package org.apache.hadoop.ozone.s3;
 import static java.net.HttpURLConnection.HTTP_BAD_REQUEST;
 import static java.net.HttpURLConnection.HTTP_FORBIDDEN;
 import static org.apache.hadoop.ozone.s3.exception.S3ErrorTable.MALFORMED_HEADER;
+import static org.apache.hadoop.ozone.s3.exception.S3ErrorTable.MISSING_SECURITY_HEADER;
+import static org.apache.hadoop.ozone.s3.exception.S3ErrorTable.NOT_IMPLEMENTED;
 import static org.apache.hadoop.ozone.s3.exception.S3ErrorTable.S3_AUTHINFO_CREATION_ERROR;
 import static org.apache.hadoop.ozone.s3.signature.AWSSignatureProcessor.DATE_FORMATTER;
 import static org.apache.hadoop.ozone.s3.signature.SignatureParser.AUTHORIZATION_HEADER;
@@ -30,6 +32,7 @@ import static org.apache.hadoop.ozone.s3.signature.StringToSignProducer.X_AMAZ_D
 import static org.apache.hadoop.ozone.s3.util.S3Consts.X_AMZ_CONTENT_SHA256;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.fail;
 import static org.junit.jupiter.params.provider.Arguments.arguments;
 import static org.mockito.Mockito.mock;
@@ -47,10 +50,12 @@ import javax.ws.rs.container.ContainerRequestContext;
 import javax.ws.rs.core.MultivaluedHashMap;
 import javax.ws.rs.core.MultivaluedMap;
 import javax.ws.rs.core.UriInfo;
+import org.apache.hadoop.hdds.conf.OzoneConfiguration;
 import org.apache.hadoop.ozone.s3.signature.AWSSignatureProcessor;
 import org.apache.hadoop.ozone.s3.signature.SignatureInfo;
 import org.apache.hadoop.ozone.s3.signature.StringToSignProducer;
 import org.apache.kerby.util.Hex;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
@@ -119,6 +124,52 @@ public class TestAuthorizationFilter {
             S3_AUTHINFO_CREATION_ERROR.getErrorMessage()
         )
     );
+  }
+
+  @Test
+  public void testMissingAuthHeaderWithLocalAuthStrict() throws Exception {
+    ContainerRequestContext context = setupContext("GET", null, null,
+        "s3g:9878", null, null, null, "/");
+
+    AWSSignatureProcessor awsSignatureProcessor = new AWSSignatureProcessor();
+    awsSignatureProcessor.setContext(context);
+
+    OzoneConfiguration conf = new OzoneConfiguration();
+    conf.setBoolean(S3GatewayConfigKeys.OZONE_S3G_LOCAL_AUTH_ENABLED, true);
+
+    authorizationFilter.setSignatureParser(awsSignatureProcessor);
+    authorizationFilter.setSignatureInfo(new SignatureInfo());
+    authorizationFilter.setOzoneConfiguration(conf);
+
+    WebApplicationException ex = assertThrows(WebApplicationException.class,
+        () -> authorizationFilter.filter(context));
+    assertEquals(HTTP_BAD_REQUEST, ex.getResponse().getStatus());
+    assertEquals(MISSING_SECURITY_HEADER.getErrorMessage(), ex.getMessage());
+  }
+
+  @Test
+  public void testPresignedUrlWithLocalAuthStrictIsRejected()
+      throws Exception {
+    ContainerRequestContext context = setupContext("GET", null, null,
+        "s3g:9878", null, null, null, "/bucket/key");
+    context.getUriInfo().getQueryParameters()
+        .putSingle("X-Amz-Algorithm", "AWS4-HMAC-SHA256");
+
+    AWSSignatureProcessor awsSignatureProcessor = new AWSSignatureProcessor();
+    awsSignatureProcessor.setContext(context);
+
+    OzoneConfiguration conf = new OzoneConfiguration();
+    conf.setBoolean(S3GatewayConfigKeys.OZONE_S3G_LOCAL_AUTH_ENABLED, true);
+
+    authorizationFilter.setSignatureParser(awsSignatureProcessor);
+    authorizationFilter.setSignatureInfo(new SignatureInfo());
+    authorizationFilter.setOzoneConfiguration(conf);
+
+    WebApplicationException ex = assertThrows(WebApplicationException.class,
+        () -> authorizationFilter.filter(context));
+    assertEquals(NOT_IMPLEMENTED.getHttpCode(), ex.getResponse().getStatus());
+    assertEquals("Presigned URL authentication is not supported by "
+        + "S3 Gateway local authentication.", ex.getMessage());
   }
 
   @SuppressWarnings("checkstyle:ParameterNumber")

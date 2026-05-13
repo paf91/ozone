@@ -72,6 +72,34 @@ public final class S3GatewayConfigKeys {
   public static final String OZONE_S3G_CLIENT_BUFFER_SIZE_DEFAULT =
       "4MB";
 
+  public static final String OZONE_S3G_LOCAL_AUTH_ENABLED =
+      "ozone.s3g.local.auth.enabled";
+  public static final boolean OZONE_S3G_LOCAL_AUTH_ENABLED_DEFAULT = false;
+  public static final String OZONE_S3G_LOCAL_AUTH_CREDENTIALS_FILE =
+      "ozone.s3g.local.auth.credentials.file";
+  public static final String OZONE_S3G_LOCAL_AUTH_CREDENTIALS_FILE_DEFAULT =
+      "";
+  public static final String OZONE_S3G_LOCAL_AUTH_RELOAD_INTERVAL =
+      "ozone.s3g.local.auth.reload.interval";
+  public static final String OZONE_S3G_LOCAL_AUTH_RELOAD_INTERVAL_DEFAULT =
+      "60s";
+  public static final String OZONE_S3G_LOCAL_AUTH_FAIL_ON_INVALID_CONFIG =
+      "ozone.s3g.local.auth.fail.on.invalid.config";
+  public static final boolean
+      OZONE_S3G_LOCAL_AUTH_FAIL_ON_INVALID_CONFIG_DEFAULT = true;
+  public static final String OZONE_S3G_LOCAL_AUTH_ALLOW_LIST_ALL_BUCKETS =
+      "ozone.s3g.local.auth.allow.list.all.buckets";
+  public static final boolean
+      OZONE_S3G_LOCAL_AUTH_ALLOW_LIST_ALL_BUCKETS_DEFAULT = false;
+  public static final String OZONE_S3G_LOCAL_AUTH_COMPATIBILITY_MODE =
+      "ozone.s3g.local.auth.compatibility.mode";
+  public static final String OZONE_S3G_LOCAL_AUTH_COMPATIBILITY_MODE_STRICT =
+      "strict";
+  public static final String
+      OZONE_S3G_LOCAL_AUTH_COMPATIBILITY_MODE_PERMISSIVE = "permissive";
+  public static final String OZONE_S3G_LOCAL_AUTH_COMPATIBILITY_MODE_DEFAULT =
+      OZONE_S3G_LOCAL_AUTH_COMPATIBILITY_MODE_STRICT;
+
   // S3G kerberos, principal config
   public static final String OZONE_S3G_KERBEROS_KEYTAB_FILE_KEY =
       "ozone.s3g.kerberos.keytab.file";

@@ -59,6 +59,12 @@ public final class StringToSignProducer {
   public static final String X_AMAZ_DATE = "x-amz-date";
   private static final Logger LOG =
       LoggerFactory.getLogger(StringToSignProducer.class);
+
+  private static final Pattern SENSITIVE_CANONICAL_HEADER =
+      Pattern.compile("(?im)^(authorization|x-amz-security-token):.*$");
+
+  private static final Pattern SENSITIVE_CANONICAL_QUERY_PARAM =
+      Pattern.compile("(?i)(X-Amz-(?:Signature|Security-Token)=)[^&\\n]*");
   private static final Charset UTF_8 = StandardCharsets.UTF_8;
   private static final String NEWLINE = "\n";
   public static final String HOST = "host";
@@ -130,11 +136,20 @@ public final class StringToSignProducer {
         !signatureInfo.isSignPayload());
     strToSign.append(hash(canonicalRequest));
     if (LOG.isDebugEnabled()) {
-      LOG.debug("canonicalRequest:[{}]", canonicalRequest);
+      LOG.debug("canonicalRequest:[{}]",
+          maskSensitiveCanonicalRequest(canonicalRequest));
       LOG.debug("StringToSign:[{}]", strToSign);
     }
 
     return strToSign.toString();
+  }
+
+  private static String maskSensitiveCanonicalRequest(
+      String canonicalRequest) {
+    String masked = SENSITIVE_CANONICAL_HEADER.matcher(canonicalRequest)
+        .replaceAll("$1:***");
+    return SENSITIVE_CANONICAL_QUERY_PARAM.matcher(masked)
+        .replaceAll("$1***");
   }
 
   public static Map<String, String> fromMultiValueToSingleValueMap(

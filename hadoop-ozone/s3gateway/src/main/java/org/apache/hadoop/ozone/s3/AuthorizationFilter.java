@@ -19,6 +19,8 @@ package org.apache.hadoop.ozone.s3;
 
 import static org.apache.hadoop.ozone.s3.exception.S3ErrorTable.ACCESS_DENIED;
 import static org.apache.hadoop.ozone.s3.exception.S3ErrorTable.INTERNAL_ERROR;
+import static org.apache.hadoop.ozone.s3.exception.S3ErrorTable.MISSING_SECURITY_HEADER;
+import static org.apache.hadoop.ozone.s3.exception.S3ErrorTable.NOT_IMPLEMENTED;
 import static org.apache.hadoop.ozone.s3.exception.S3ErrorTable.S3_AUTHINFO_CREATION_ERROR;
 import static org.apache.hadoop.ozone.s3.util.S3Utils.wrapOS3Exception;
 
@@ -29,7 +31,10 @@ import javax.inject.Inject;
 import javax.ws.rs.container.ContainerRequestContext;
 import javax.ws.rs.container.ContainerRequestFilter;
 import javax.ws.rs.container.PreMatching;
+import javax.ws.rs.core.HttpHeaders;
 import javax.ws.rs.ext.Provider;
+import org.apache.hadoop.hdds.conf.OzoneConfiguration;
+import org.apache.hadoop.ozone.s3.auth.S3GatewayLocalAuthConfig;
 import org.apache.hadoop.ozone.s3.exception.OS3Exception;
 import org.apache.hadoop.ozone.s3.exception.S3ErrorTable;
 import org.apache.hadoop.ozone.s3.signature.SignatureInfo;
@@ -60,14 +65,21 @@ public class AuthorizationFilter implements ContainerRequestFilter {
   @Inject
   private SignatureInfo signatureInfo;
 
+  @Inject
+  private OzoneConfiguration ozoneConfiguration;
+
   @Override
   public void filter(ContainerRequestContext context) throws
       IOException {
     try {
+      rejectPresignedUrlWithLocalAuth(context);
       signatureInfo.initialize(signatureProcessor.parseSignature());
       if (signatureInfo.getVersion() == Version.V4) {
         signatureInfo.setStrToSign(
             StringToSignProducer.createSignatureBase(signatureInfo, context));
+      } else if (signatureInfo.getVersion() == Version.NONE
+          && isStrictLocalAuthEnabled()) {
+        throw S3ErrorTable.newError(MISSING_SECURITY_HEADER, "Authorization");
       } else {
         LOG.debug("Unsupported AWS signature version: {}",
             signatureInfo.getVersion());
@@ -104,6 +116,34 @@ public class AuthorizationFilter implements ContainerRequestFilter {
   @VisibleForTesting
   public SignatureInfo getSignatureInfo() {
     return signatureInfo;
+  }
+
+  @VisibleForTesting
+  public void setOzoneConfiguration(OzoneConfiguration conf) {
+    this.ozoneConfiguration = conf;
+  }
+
+  private boolean isStrictLocalAuthEnabled() {
+    return ozoneConfiguration != null
+        && S3GatewayLocalAuthConfig.isStrictLocalAuthEnabled(
+            ozoneConfiguration);
+  }
+
+  private void rejectPresignedUrlWithLocalAuth(ContainerRequestContext context) {
+    if (!isStrictLocalAuthEnabled()) {
+      return;
+    }
+    if (context.getHeaderString(HttpHeaders.AUTHORIZATION) == null
+        && (context.getUriInfo().getQueryParameters()
+            .containsKey("X-Amz-Algorithm")
+            || context.getUriInfo().getQueryParameters()
+            .containsKey("X-Amz-Signature"))) {
+      OS3Exception ex = S3ErrorTable.newError(NOT_IMPLEMENTED,
+          "presigned-url");
+      ex.setErrorMessage("Presigned URL authentication is not supported by "
+          + "S3 Gateway local authentication.");
+      throw ex;
+    }
   }
 
 }

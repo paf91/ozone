@@ -66,4 +66,17 @@ public class TestOzoneClientCache {
         .doesNotContain("More than 1 OzoneManager ServiceID");
   }
 
+  @Test
+  public void testLocalAuthFailsWhenOzoneSecurityIsEnabled() {
+    OzoneConfiguration configuration = new OzoneConfiguration();
+    configuration.setBoolean(OzoneConfigKeys.OZONE_SECURITY_ENABLED_KEY, true);
+    configuration.setBoolean(S3GatewayConfigKeys.OZONE_S3G_LOCAL_AUTH_ENABLED,
+        true);
+    OzoneClientCache subject = new OzoneClientCache(configuration);
+
+    IOException e = assertThrows(IOException.class, subject::initialize);
+    assertThat(e.getMessage())
+        .contains("cannot be enabled when ozone.security.enabled=true");
+  }
+
 }

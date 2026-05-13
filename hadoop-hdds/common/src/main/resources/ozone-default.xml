@@ -2027,6 +2027,64 @@
   </property>
 
   <property>
+    <name>ozone.s3g.local.auth.enabled</name>
+    <value>false</value>
+    <tag>OZONE, S3GATEWAY, SECURITY</tag>
+    <description>Enable experimental S3 Gateway local AWS access-key
+      authentication in non-secure clusters. This is a gateway-only security
+      boundary and is not a replacement for ozone.security.enabled=true.
+    </description>
+  </property>
+
+  <property>
+    <name>ozone.s3g.local.auth.credentials.file</name>
+    <value></value>
+    <tag>OZONE, S3GATEWAY, SECURITY</tag>
+    <description>Path to the local JSON credentials and authorization file
+      used by S3 Gateway local authentication.
+    </description>
+  </property>
+
+  <property>
+    <name>ozone.s3g.local.auth.reload.interval</name>
+    <value>60s</value>
+    <tag>OZONE, S3GATEWAY, SECURITY</tag>
+    <description>Interval for reloading the S3 Gateway local credentials
+      file. If set to 0, the file is loaded once at startup.
+    </description>
+  </property>
+
+  <property>
+    <name>ozone.s3g.local.auth.fail.on.invalid.config</name>
+    <value>true</value>
+    <tag>OZONE, S3GATEWAY, SECURITY</tag>
+    <description>If true, S3 Gateway fails startup when local authentication
+      is enabled but the credential file is missing or invalid.
+    </description>
+  </property>
+
+  <property>
+    <name>ozone.s3g.local.auth.allow.list.all.buckets</name>
+    <value>false</value>
+    <tag>OZONE, S3GATEWAY, SECURITY</tag>
+    <description>If false, GET Service/ListBuckets is denied unless the
+      authenticated local S3 user has an explicit ListAllMyBuckets rule with
+      bucket "*".
+    </description>
+  </property>
+
+  <property>
+    <name>ozone.s3g.local.auth.compatibility.mode</name>
+    <value>strict</value>
+    <tag>OZONE, S3GATEWAY, SECURITY</tag>
+    <description>Compatibility mode for S3 Gateway local authentication.
+      Supported values are strict and permissive. strict requires valid SigV4
+      on all S3 requests. permissive keeps existing non-secure behavior and is
+      intended only for debugging.
+    </description>
+  </property>
+
+  <property>
     <name>ozone.s3g.list-keys.shallow.enabled</name>
     <value>true</value>
     <tag>OZONE, S3GATEWAY</tag>

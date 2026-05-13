@@ -40,6 +40,7 @@ import org.apache.hadoop.ozone.client.OzoneClientFactory;
 import org.apache.hadoop.ozone.om.helpers.ServiceInfoEx;
 import org.apache.hadoop.ozone.om.protocol.S3Auth;
 import org.apache.hadoop.ozone.om.protocolPB.GrpcOmTransport;
+import org.apache.hadoop.ozone.s3.auth.S3GatewayLocalAuthConfig;
 import org.apache.ratis.util.Preconditions;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -64,6 +65,7 @@ public class OzoneClientCache {
 
   @PostConstruct
   public void initialize() throws IOException {
+    S3GatewayLocalAuthConfig.validateStartupConfiguration(conf);
     conf.set("ozone.om.group.rights", "NONE");
     // Set the expected OM version if not set via config.
     conf.setIfUnset(OZONE_CLIENT_REQUIRED_OM_VERSION_MIN_KEY,

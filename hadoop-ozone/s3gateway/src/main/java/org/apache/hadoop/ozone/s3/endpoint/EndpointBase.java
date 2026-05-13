@@ -98,6 +98,7 @@ import org.apache.hadoop.ozone.s3.MultiDigestInputStream;
 import org.apache.hadoop.ozone.s3.RequestIdentifier;
 import org.apache.hadoop.ozone.s3.SignedChunksInputStream;
 import org.apache.hadoop.ozone.s3.UnsignedChunksInputStream;
+import org.apache.hadoop.ozone.s3.auth.S3Principal;
 import org.apache.hadoop.ozone.s3.commontypes.RequestParameters;
 import org.apache.hadoop.ozone.s3.exception.OS3Exception;
 import org.apache.hadoop.ozone.s3.exception.S3ErrorTable;
@@ -191,9 +192,12 @@ public abstract class EndpointBase {
     queryParams = RequestParameters.of(context.getUriInfo().getQueryParameters());
     // Note: userPrincipal is initialized to be the same value as accessId,
     //  could be updated later in RpcClient#getS3Volume
+    S3Principal principal = S3Principal.fromContext(context);
+    String userPrincipal = principal == null ? signatureInfo.getAwsAccessId()
+        : principal.getPrincipal();
     s3Auth = new S3Auth(signatureInfo.getStringToSign(),
         signatureInfo.getSignature(),
-        signatureInfo.getAwsAccessId(), signatureInfo.getAwsAccessId());
+        signatureInfo.getAwsAccessId(), userPrincipal);
     LOG.debug("S3 access id: {}", s3Auth.getAccessID());
     ClientProtocol clientProtocol =
         getClient().getObjectStore().getClientProxy();
