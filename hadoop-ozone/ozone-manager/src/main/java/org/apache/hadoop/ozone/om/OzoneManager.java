@@ -41,8 +41,13 @@ import static org.apache.hadoop.ozone.OzoneConfigKeys.OZONE_KEY_PREALLOCATION_BL
 import static org.apache.hadoop.ozone.OzoneConfigKeys.OZONE_READONLY_ADMINISTRATORS;
 import static org.apache.hadoop.ozone.OzoneConfigKeys.OZONE_READ_BLACKLIST_GROUPS;
 import static org.apache.hadoop.ozone.OzoneConfigKeys.OZONE_READ_BLACKLIST_USERS;
+import static org.apache.hadoop.ozone.OzoneConfigKeys.OZONE_S3_ACCESS_KEY_ENABLED;
+import static org.apache.hadoop.ozone.OzoneConfigKeys.OZONE_S3_ACCESS_KEY_ENCRYPTION_KEY_NAME;
+import static org.apache.hadoop.ozone.OzoneConfigKeys.OZONE_S3_ACCESS_KEY_INSECURE_CLUSTER_ADMIN_ALLOWED;
+import static org.apache.hadoop.ozone.OzoneConfigKeys.OZONE_S3_ACCESS_KEY_LOCAL_POLICY_ENABLED;
 import static org.apache.hadoop.ozone.OzoneConfigKeys.OZONE_SCM_BLOCK_SIZE;
 import static org.apache.hadoop.ozone.OzoneConfigKeys.OZONE_SCM_BLOCK_SIZE_DEFAULT;
+import static org.apache.hadoop.ozone.OzoneConfigKeys.OZONE_SECURITY_ENABLED_KEY;
 import static org.apache.hadoop.ozone.OzoneConsts.DB_TRANSIENT_MARKER;
 import static org.apache.hadoop.ozone.OzoneConsts.DEFAULT_OM_UPDATE_ID;
 import static org.apache.hadoop.ozone.OzoneConsts.LAYOUT_VERSION_KEY;
@@ -291,6 +296,7 @@ import org.apache.hadoop.ozone.om.ratis_snapshot.OmRatisSnapshotProvider;
 import org.apache.hadoop.ozone.om.request.OMClientRequest;
 import org.apache.hadoop.ozone.om.s3.S3SecretCacheProvider;
 import org.apache.hadoop.ozone.om.s3.S3SecretStoreProvider;
+import org.apache.hadoop.ozone.om.security.ManagedS3AccessKeySecretRetrievalManager;
 import org.apache.hadoop.ozone.om.service.CompactDBUtil;
 import org.apache.hadoop.ozone.om.service.DirectoryDeletingService;
 import org.apache.hadoop.ozone.om.service.OMRangerBGSyncService;
@@ -313,6 +319,8 @@ import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.TenantS
 import org.apache.hadoop.ozone.protocolPB.OMAdminProtocolServerSideImpl;
 import org.apache.hadoop.ozone.protocolPB.OMInterServiceProtocolServerSideImpl;
 import org.apache.hadoop.ozone.protocolPB.OzoneManagerProtocolServerSideTranslatorPB;
+import org.apache.hadoop.ozone.security.ManagedS3AccessKeyAuthContext;
+import org.apache.hadoop.ozone.security.ManagedS3AccessKeyConfig;
 import org.apache.hadoop.ozone.security.OMCertificateClient;
 import org.apache.hadoop.ozone.security.OzoneDelegationTokenSecretManager;
 import org.apache.hadoop.ozone.security.OzoneTokenIdentifier;
@@ -391,6 +399,10 @@ public final class OzoneManager extends ServiceRuntimeInfoImpl
 
   // STS token (if present)
   private static final ThreadLocal<STSTokenIdentifier> STS_TOKEN = new ThreadLocal<>();
+
+  // Managed S3 access key identity (if present)
+  private static final ThreadLocal<ManagedS3AccessKeyAuthContext>
+      MANAGED_S3_AUTH_CONTEXT = new ThreadLocal<>();
 
   private static boolean securityEnabled = false;
 
@@ -486,6 +498,9 @@ public final class OzoneManager extends ServiceRuntimeInfoImpl
   private final boolean isS3MultiTenancyEnabled;
   private final boolean isStrictS3;
   private final boolean isS3STSEnabled;
+  private final ManagedS3AccessKeyConfig managedS3AccessKeyConfig;
+  private final ManagedS3AccessKeySecretRetrievalManager
+      managedS3AccessKeySecretRetrievalManager;
   private ExitManager exitManager;
 
   private OzoneManagerPrepareState prepareState;
@@ -530,6 +545,7 @@ public final class OzoneManager extends ServiceRuntimeInfoImpl
     super(OzoneVersionInfo.OZONE_VERSION_INFO);
     Objects.requireNonNull(conf, "conf == null");
     setConfiguration(conf);
+    this.managedS3AccessKeyConfig = managedS3AccessKeyConfig(conf);
     TracingConfig tracingConfig = conf.getObject(TracingConfig.class);
     TracingReconfigurationCallback tracingReconfigurationCallback =
         TracingReconfigurationCallback.init("OzoneManager", tracingConfig);
@@ -538,6 +554,8 @@ public final class OzoneManager extends ServiceRuntimeInfoImpl
         OMHANodeDetails.loadOMHAConfig(configuration);
 
     this.isSecurityEnabled = OzoneSecurityUtil.isSecurityEnabled(conf);
+    validateManagedS3AccessKeyStartup(conf,
+        this.isSecurityEnabled || testSecureOmFlag);
     this.peerNodesMap = omhaNodeDetails.getPeerNodesMap();
     this.omNodeDetails = omhaNodeDetails.getLocalNodeDetails();
     omStorage = new OMStorage(conf);
@@ -673,6 +691,11 @@ public final class OzoneManager extends ServiceRuntimeInfoImpl
       kmsProvider = null;
       LOG.error("Fail to create Key Provider");
     }
+    validateManagedS3AccessKeyKmsStartup(conf, kmsProvider);
+    this.managedS3AccessKeySecretRetrievalManager =
+        new ManagedS3AccessKeySecretRetrievalManager(
+            managedS3AccessKeyConfig.getRetrievalHandleTtl(),
+            managedS3AccessKeyConfig.getRetrievalHandleMaxEntries());
     if (secConfig.isSecurityEnabled()) {
       omComponent = OM_DAEMON + "-" + omId;
       HddsProtos.OzoneManagerDetailsProto omInfo =
@@ -908,6 +931,71 @@ public final class OzoneManager extends ServiceRuntimeInfoImpl
   }
 
   /**
+   * Set the managed S3 access key auth context for the current RPC handler
+   * thread.
+   */
+  public static void setManagedS3AccessKeyAuthContext(
+      ManagedS3AccessKeyAuthContext val) {
+    MANAGED_S3_AUTH_CONTEXT.set(val);
+  }
+
+  /**
+   * Get the managed S3 access key auth context for the current RPC handler
+   * thread.
+   */
+  public static ManagedS3AccessKeyAuthContext
+      getManagedS3AccessKeyAuthContext() {
+    return MANAGED_S3_AUTH_CONTEXT.get();
+  }
+
+  /**
+   * Clear the managed S3 access key auth context for the current RPC handler
+   * thread.
+   */
+  public static void clearManagedS3AccessKeyAuthContext() {
+    MANAGED_S3_AUTH_CONTEXT.remove();
+  }
+
+  /**
+   * Returns the S3 credential access key id for the current request.
+   */
+  public static String getS3AuthCredentialAccessId() {
+    final ManagedS3AccessKeyAuthContext managedContext =
+        getManagedS3AccessKeyAuthContext();
+    if (managedContext != null) {
+      return managedContext.getCredentialAccessKeyId();
+    }
+    final S3Authentication s3Auth = getS3Auth();
+    return s3Auth != null ? s3Auth.getAccessId() : null;
+  }
+
+  /**
+   * Returns the S3 namespace access id for the current request.
+   */
+  public static String getS3AuthNamespaceAccessId() throws OMException {
+    final ManagedS3AccessKeyAuthContext managedContext =
+        getManagedS3AccessKeyAuthContext();
+    if (managedContext != null) {
+      return managedContext.getS3NamespaceAccessId();
+    }
+    return getS3AuthEffectiveAccessId();
+  }
+
+  /**
+   * Returns the authorization principal for the current S3 request.
+   */
+  public static String getS3AuthAuthorizationPrincipal() throws OMException {
+    final ManagedS3AccessKeyAuthContext managedContext =
+        getManagedS3AccessKeyAuthContext();
+    if (managedContext != null) {
+      return managedContext.getEffectiveUser();
+    }
+    final String accessId = getS3AuthEffectiveAccessId();
+    return accessId != null ? OzoneAclUtils.accessIdToUserPrincipal(accessId) :
+        null;
+  }
+
+  /**
    * Returns the effective accessId for the current request.  If STS temporary credentials are being used,
    * the access key id will be the original access key id (i.e. the creator of the token).
    */
@@ -971,6 +1059,111 @@ public final class OzoneManager extends ServiceRuntimeInfoImpl
   public static OzoneManager createOm(OzoneConfiguration conf,
       StartupOption startupOption) throws IOException, AuthenticationException {
     return new OzoneManager(conf, startupOption);
+  }
+
+  @VisibleForTesting
+  static void validateManagedS3AccessKeyStartup(OzoneConfiguration conf,
+      boolean effectiveSecurityEnabled) {
+    final ManagedS3AccessKeyConfig accessKeyConfig =
+        managedS3AccessKeyConfig(conf);
+
+    if (!accessKeyConfig.isEnabled() || effectiveSecurityEnabled) {
+      return;
+    }
+
+    if (!accessKeyConfig.isInsecureClusterAdminAllowed()) {
+      throw new ConfigurationException(
+          OZONE_S3_ACCESS_KEY_ENABLED + " requires "
+              + OZONE_S3_ACCESS_KEY_INSECURE_CLUSTER_ADMIN_ALLOWED
+              + "=true when " + OZONE_SECURITY_ENABLED_KEY + "=false");
+    }
+
+    if (!accessKeyConfig.isLocalPolicyEnabled()) {
+      throw new ConfigurationException(
+          OZONE_S3_ACCESS_KEY_ENABLED + " requires "
+              + OZONE_S3_ACCESS_KEY_LOCAL_POLICY_ENABLED + "=true when "
+              + OZONE_SECURITY_ENABLED_KEY + "=false; "
+              + OZONE_S3_ACCESS_KEY_INSECURE_CLUSTER_ADMIN_ALLOWED
+              + " does not bypass "
+              + OZONE_S3_ACCESS_KEY_LOCAL_POLICY_ENABLED);
+    }
+  }
+
+  @VisibleForTesting
+  static void validateManagedS3AccessKeyKmsStartup(OzoneConfiguration conf) {
+    final ManagedS3AccessKeyConfig accessKeyConfig =
+        managedS3AccessKeyConfig(conf);
+    if (!accessKeyConfig.isEnabled()) {
+      return;
+    }
+
+    try {
+      validateManagedS3AccessKeyKmsStartup(accessKeyConfig,
+          createKeyProviderExt(conf));
+    } catch (IOException e) {
+      throw new ConfigurationException(
+          OZONE_S3_ACCESS_KEY_ENABLED + " requires a usable "
+              + CommonConfigurationKeysPublic.HADOOP_SECURITY_KEY_PROVIDER_PATH,
+          e);
+    }
+  }
+
+  @VisibleForTesting
+  static void validateManagedS3AccessKeyKmsStartup(OzoneConfiguration conf,
+      KeyProviderCryptoExtension provider) {
+    validateManagedS3AccessKeyKmsStartup(managedS3AccessKeyConfig(conf),
+        provider);
+  }
+
+  private static ManagedS3AccessKeyConfig managedS3AccessKeyConfig(
+      OzoneConfiguration conf) {
+    final ManagedS3AccessKeyConfig accessKeyConfig;
+    try {
+      accessKeyConfig = ManagedS3AccessKeyConfig.from(conf);
+    } catch (IllegalArgumentException e) {
+      throw new ConfigurationException(
+          "Invalid managed S3 access key configuration", e);
+    }
+    return accessKeyConfig;
+  }
+
+  private static void validateManagedS3AccessKeyKmsStartup(
+      ManagedS3AccessKeyConfig accessKeyConfig,
+      KeyProviderCryptoExtension provider) {
+    if (!accessKeyConfig.isEnabled()) {
+      return;
+    }
+
+    if (provider == null) {
+      throw new ConfigurationException(
+          OZONE_S3_ACCESS_KEY_ENABLED + " requires "
+              + CommonConfigurationKeysPublic.HADOOP_SECURITY_KEY_PROVIDER_PATH
+              + " to configure a usable KeyProviderCryptoExtension");
+    }
+    if (provider.isTransient()) {
+      throw new ConfigurationException(
+          OZONE_S3_ACCESS_KEY_ENABLED + " requires a durable "
+              + CommonConfigurationKeysPublic.HADOOP_SECURITY_KEY_PROVIDER_PATH);
+    }
+
+    final String encryptionKeyName = accessKeyConfig.getEncryptionKeyName();
+    try {
+      if (provider.getMetadata(encryptionKeyName) == null) {
+        throw new ConfigurationException(
+            OZONE_S3_ACCESS_KEY_ENCRYPTION_KEY_NAME + " key "
+                + encryptionKeyName + " does not exist");
+      }
+      if (provider.getCurrentKey(encryptionKeyName) == null) {
+        throw new ConfigurationException(
+            OZONE_S3_ACCESS_KEY_ENCRYPTION_KEY_NAME + " key "
+                + encryptionKeyName + " has no current key version");
+      }
+    } catch (IOException e) {
+      throw new ConfigurationException(
+          OZONE_S3_ACCESS_KEY_ENABLED + " cannot validate "
+              + OZONE_S3_ACCESS_KEY_ENCRYPTION_KEY_NAME + " key "
+              + encryptionKeyName, e);
+    }
   }
 
   private void logVersionMismatch(OzoneConfiguration conf, ScmInfo scmInfo) {
@@ -1208,7 +1401,7 @@ public final class OzoneManager extends ServiceRuntimeInfoImpl
     return testSecureOmFlag;
   }
 
-  private KeyProviderCryptoExtension createKeyProviderExt(
+  private static KeyProviderCryptoExtension createKeyProviderExt(
       OzoneConfiguration conf) throws IOException {
     KeyProvider keyProvider = KMSUtil.createKeyProvider(conf,
         CommonConfigurationKeysPublic.HADOOP_SECURITY_KEY_PROVIDER_PATH);
@@ -1851,6 +2044,15 @@ public final class OzoneManager extends ServiceRuntimeInfoImpl
   @VisibleForTesting
   public KeyProviderCryptoExtension getKmsProvider() {
     return kmsProvider;
+  }
+
+  public ManagedS3AccessKeyConfig getManagedS3AccessKeyConfig() {
+    return managedS3AccessKeyConfig;
+  }
+
+  public ManagedS3AccessKeySecretRetrievalManager
+      getManagedS3AccessKeySecretRetrievalManager() {
+    return managedS3AccessKeySecretRetrievalManager;
   }
 
   public PrefixManager getPrefixManager() {
@@ -3976,29 +4178,30 @@ public final class OzoneManager extends ServiceRuntimeInfoImpl
             s3Volume);
       }
     } else {
-      // If this S3 request is authenticated with an STS session token, map
-      // the request to the *original* long-lived access ID so that the
-      // temporary credentials inherit that user's ACLs. Otherwise, fall back
-      // to the accessId included directly in the S3Authentication.
-      final String accessId = getS3AuthEffectiveAccessId();
+      final String namespaceAccessId = getS3AuthNamespaceAccessId();
+      final ManagedS3AccessKeyAuthContext managedContext =
+          getManagedS3AccessKeyAuthContext();
 
       // If S3 Multi-Tenancy is not enabled, all S3 requests will be redirected
       // to the default s3v for compatibility
       final Optional<String> optionalTenantId = isS3MultiTenancyEnabled() ?
-          multiTenantManager.getTenantForAccessID(accessId) : Optional.empty();
+          multiTenantManager.getTenantForAccessID(namespaceAccessId) :
+          Optional.empty();
 
       if (!optionalTenantId.isPresent()) {
-        final UserGroupInformation s3gUGI =
-            UserGroupInformation.createRemoteUser(accessId);
+        final UserGroupInformation s3gUGI = UserGroupInformation
+            .createRemoteUser(namespaceAccessId);
         // When the accessId belongs to the default s3v (i.e. when the accessId
         // key pair is generated using the regular `ozone s3 getsecret`), the
         // user principal returned here should simply be the accessId's short
         // user name (processed by the auth_to_local rule)
-        userPrincipal = s3gUGI.getShortUserName();
+        userPrincipal = managedContext != null ?
+            managedContext.getEffectiveUser() : s3gUGI.getShortUserName();
 
         if (LOG.isDebugEnabled()) {
           LOG.debug("No tenant found for access ID {}. Directing "
-              + "requests to default s3 volume {}.", accessId, s3Volume);
+              + "requests to default s3 volume {}.", namespaceAccessId,
+              s3Volume);
         }
       } else {
         // S3 Multi-Tenancy is enabled, and the accessId is assigned to a tenant
@@ -4011,7 +4214,7 @@ public final class OzoneManager extends ServiceRuntimeInfoImpl
           s3Volume = tenantState.getBucketNamespaceName();
         } else {
           String message = "Unable to find tenant '" + tenantId
-              + "' details for access ID " + accessId
+              + "' details for access ID " + namespaceAccessId
               + ". The tenant might have been removed during this operation, "
               + "or the OM DB is inconsistent";
           LOG.warn(message);
@@ -4019,8 +4222,8 @@ public final class OzoneManager extends ServiceRuntimeInfoImpl
         }
         if (LOG.isDebugEnabled()) {
           LOG.debug("Get S3 volume request for access ID {} belonging to " +
-                  "tenant {} is directed to the volume {}.", accessId, tenantId,
-              s3Volume);
+                  "tenant {} is directed to the volume {}.",
+              namespaceAccessId, tenantId, s3Volume);
         }
 
         OMLockDetails omLockDetails = getMetadataManager().getLock()
@@ -4029,7 +4232,7 @@ public final class OzoneManager extends ServiceRuntimeInfoImpl
 
         try {
           // Inject user name to the response to be used for KMS on the client
-          userPrincipal = OzoneAclUtils.accessIdToUserPrincipal(accessId);
+          userPrincipal = getS3AuthAuthorizationPrincipal();
         } finally {
           if (acquiredVolumeLock) {
             getMetadataManager().getLock().releaseReadLock(
@@ -4924,7 +5127,7 @@ public final class OzoneManager extends ServiceRuntimeInfoImpl
     if (aclEnabled) {
       UserGroupInformation ugi = getRemoteUser();
       if (getS3Auth() != null) {
-        final String principal = OzoneAclUtils.accessIdToUserPrincipal(getS3AuthEffectiveAccessId());
+        final String principal = getS3AuthAuthorizationPrincipal();
         ugi = UserGroupInformation.createRemoteUser(principal);
       }
       InetAddress remoteIp = Server.getRemoteIp();
